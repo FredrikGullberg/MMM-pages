@@ -9,6 +9,8 @@ Module.register('MMM-pages', {
     modules: [],
     fixed: ['MMM-page-indicator'],
     hiddenPages: {},
+    pageSchedules: {},
+    scheduleTimeZone: undefined,
     animationTime: 1000,
     rotationTime: 0, // Deprecated
     timings: { default: 0 },
@@ -79,6 +81,13 @@ Module.register('MMM-pages', {
 
     this.hiddenPageTimer = null;
     this.permanentlyHiddenModules = new Set();
+    this.domReady = false;
+    this.allPages = this.config.modules.slice();
+    this.allTimings = { ...this.config.timings };
+    this.configuredHomePage = this.config.homePage;
+    this.activePageIndices = this.allPages.map((page, index) => index);
+    this.preparePageSchedules();
+    this.refreshScheduledPages();
   },
 
   /**
@@ -114,6 +123,99 @@ Module.register('MMM-pages', {
   },
 
   /**
+   * Validate date windows once, retaining configured page numbers as stable keys.
+   * An invalid window disables its page rather than displaying expired content.
+   */
+  preparePageSchedules() {
+    this.pageScheduleRules = new Map();
+    const schedules = this.config.pageSchedules ?? {};
+    if (typeof schedules !== 'object' || schedules === null || Array.isArray(schedules)) {
+      Log.error('[MMM-pages] Invalid "pageSchedules". Expected an object keyed by configured page index.');
+      return;
+    }
+    try {
+      this.scheduleDateFormatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: this.config.scheduleTimeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      });
+    } catch {
+      this.scheduleDateFormatter = null;
+      Log.error('[MMM-pages] Invalid "scheduleTimeZone". Scheduled pages will remain hidden.');
+    }
+    const validDate = value => typeof value === 'string'
+      && /^\d{4}-\d{2}-\d{2}$/u.test(value)
+      && Number.isFinite(Date.parse(`${value}T00:00:00Z`))
+      && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+    for (const [key, rule] of Object.entries(schedules)) {
+      const page = Number(key);
+      if (!/^(0|[1-9]\d*)$/u.test(key) || page >= this.allPages.length) {
+        Log.warn(`[MMM-pages] Ignoring schedule for unknown page "${key}".`);
+        continue;
+      }
+      const valid = rule !== null && typeof rule === 'object' && !Array.isArray(rule)
+        && Object.keys(rule).every(field => field === 'from' || field === 'until')
+        && (rule.from === undefined || validDate(rule.from))
+        && (rule.until === undefined || validDate(rule.until))
+        && (rule.from === undefined || rule.until === undefined || rule.from < rule.until);
+      this.pageScheduleRules.set(page, valid ? rule : null);
+      if (!valid) Log.error(`[MMM-pages] Invalid schedule for page ${page}; this page will remain hidden.`);
+    }
+  },
+
+  /**
+   * Rebuild the visible page list while preserving each page's original timing.
+   * Public page notifications use compact visible indices for the stock indicator.
+   * @param {Date} [now] Current instant, injectable for boundary tests.
+   */
+  refreshScheduledPages(now = new Date()) {
+    if (!this.pageScheduleRules?.size) return;
+    let today;
+    if (this.scheduleDateFormatter) {
+      const parts = this.scheduleDateFormatter.formatToParts(now);
+      const part = type => parts.find(value => value.type === type).value;
+      today = `${part('year')}-${part('month')}-${part('day')}`;
+    }
+    const active = this.allPages.map((page, index) => index).filter((index) => {
+      if (!this.pageScheduleRules.has(index)) return true;
+      const rule = this.pageScheduleRules.get(index);
+      return Boolean(rule && today && (!rule.from || today >= rule.from) && (!rule.until || today < rule.until));
+    });
+    if (active.join(',') === this.activePageIndices.join(',')) return;
+    const previousPage = this.activePageIndices[this.curPage];
+    const previousCount = this.activePageIndices.length;
+    this.activePageIndices = active;
+    this.config.modules = active.map(index => this.allPages[index]);
+    this.config.timings = Object.fromEntries(Object.entries(this.allTimings).filter(([key]) => !/^\d+$/u.test(key)));
+    active.forEach((original, visible) => {
+      if (Object.hasOwn(this.allTimings, original)) this.config.timings[visible] = this.allTimings[original];
+    });
+    this.config.homePage = Math.max(0, active.indexOf(this.configuredHomePage));
+    this.curPage = active.includes(previousPage) ? active.indexOf(previousPage) : this.config.homePage;
+    if (this.domReady) {
+      this.sendNotification('MAX_PAGES_CHANGED', active.length);
+      this.sendNotification('NEW_PAGE', active.length ? this.curPage : -1);
+      this.registerApiActions();
+      if (!this.isOnHiddenPage) {
+        if (previousPage !== active[this.curPage] || previousCount === 0) this.animatePageChange();
+        if (!this.rotationPaused) this.resetTimerWithDelay(0);
+      }
+    }
+  },
+
+  /**
+   * Check date windows at each minute boundary, independently of rotation/pause.
+   * Keep checking when all pages are inactive so future pages can reappear.
+   */
+  startScheduleTimer() {
+    clearTimeout(this.scheduleTimer);
+    if (!this.pageScheduleRules?.size) return;
+    this.scheduleTimer = setTimeout(() => {
+      this.refreshScheduledPages();
+      this.startScheduleTimer();
+    }, 60000 - Date.now() % 60000 + 10);
+  },
+
+  /**
    * Handles incoming notifications. Responds to the following:
    *   'PAGE_SELECT' - Set the page to the specified payload page.
    *   'PAGE_CHANGED' - Deprecated alias for PAGE_SELECT.
@@ -132,6 +234,7 @@ Module.register('MMM-pages', {
    * @param {number|string} payload the page to change to/by
    */
   notificationReceived(notification, payload) {
+    if (this.domReady) this.refreshScheduledPages();
     switch (notification) {
       case 'PAGE_CHANGED':
         Log.warn('[MMM-pages] The notification "PAGE_CHANGED" is deprecated. Please use "PAGE_SELECT" instead.');
@@ -166,14 +269,17 @@ Module.register('MMM-pages', {
             Log.log(`[MMM-pages] Module ${module.name} (${module.identifier}) is initially hidden and will remain so`);
           }
         });
+        this.domReady = true;
+        this.refreshScheduledPages();
         this.sendNotification('MAX_PAGES_CHANGED', this.config.modules.length);
-        this.sendNotification('NEW_PAGE', this.curPage);
+        this.sendNotification('NEW_PAGE', this.config.modules.length ? this.curPage : -1);
         this.animatePageChange();
         this.resetTimerWithDelay(0);
         this.registerApiActions();
+        this.startScheduleTimer();
         break;
       case 'QUERY_PAGE_NUMBER':
-        this.sendNotification('PAGE_NUMBER_IS', this.curPage);
+        this.sendNotification('PAGE_NUMBER_IS', this.config.modules.length ? this.curPage : -1);
         break;
       case 'PAUSE_ROTATION':
         this.setRotation(false);
@@ -219,6 +325,7 @@ Module.register('MMM-pages', {
    * numbers.
    */
   changePageBy(amt, fallback) {
+    if (this.config.modules.length === 0) return;
     if (typeof amt !== 'number' && typeof fallback === 'undefined') {
       Log.warn(`[MMM-pages] ${amt} is not a number!`);
     }
@@ -247,7 +354,12 @@ Module.register('MMM-pages', {
       if (!this.rotationPaused) {
         this.resetTimerWithDelay(0);
       }
-      this.sendNotification('NEW_PAGE', this.curPage);
+      this.sendNotification('NEW_PAGE', this.config.modules.length ? this.curPage : -1);
+    } else if (this.allPages?.length) {
+      // All configured pages are outside their date windows. Keep fixed modules.
+      this.animatePageChange();
+      this.clearTimers();
+      this.sendNotification('NEW_PAGE', -1);
     } else {
       Log.error(`[MMM-pages] Pages are not properly defined! Expected array, got ${typeof this.config.modules}`);
     }
@@ -273,23 +385,31 @@ Module.register('MMM-pages', {
 
     let modulesToShow;
     if (typeof targetPageName === 'undefined') {
-      modulesToShow = this.config.fixed.concat(this.config.modules[this.curPage]);
+      modulesToShow = this.config.fixed.concat(this.config.modules[this.curPage] || []);
     } else {
       modulesToShow = this.config.hiddenPages[targetPageName];
     }
+    const noActivePages = typeof targetPageName === 'undefined' && this.config.modules.length === 0;
     const animationTime = this.config.animationTime / 2;
+    if (noActivePages) {
+      // The stock indicator rejects a zero page count; hide its dots instead.
+      MM.getModules().withClass('MMM-page-indicator')
+        .enumerate(module => module.hide(animationTime, () => {}, lockStringObj));
+    }
 
     MM.getModules()
       .exceptWithClass(modulesToShow)
       .enumerate(module => module.hide(animationTime, () => {}, lockStringObj));
 
     // Shows all modules meant to be on the current page, after a small delay.
-    setTimeout(() => {
+    clearTimeout(this.pageAnimationTimer);
+    this.pageAnimationTimer = setTimeout(() => {
       MM.getModules()
         .withClass(modulesToShow)
         .enumerate((module) => {
           // Respect hiddenOnStartup - don't show modules that were initially hidden
-          if (!this.permanentlyHiddenModules.has(module.identifier)) {
+          if (!this.permanentlyHiddenModules.has(module.identifier)
+            && !(noActivePages && module.name === 'MMM-page-indicator')) {
             module.show(animationTime, () => {}, lockStringObj);
           }
         });
@@ -304,6 +424,7 @@ Module.register('MMM-pages', {
     Log.debug(`[MMM-pages] resetTimerWithDelay called with delay: ${delay}ms`);
     // Always clear, otherwise a timer from the previous page keeps rotating a page without timing.
     this.clearTimers();
+    if (this.config.modules.length === 0) return;
 
     let currentRotationTime = this.config.timings.default;
     if (Object.hasOwn(this.config.timings, this.curPage)) {

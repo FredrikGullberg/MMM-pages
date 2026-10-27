@@ -155,12 +155,76 @@ You have to add the class name to the config of the module you want to show on a
     ...
 ```
 
-### Configuration options
+### Date-limited pages
+
+Use `pageSchedules` to show a normal page only during a date window. The keys
+are the original, zero-based positions in your configured `modules` array.
+Pages without a schedule are always available.
+
+```js
+{
+  module: 'MMM-pages',
+  config: {
+    modules: [
+      ['page0'],
+      ['judoCollage'],
+      ['judo2'],
+      ['klubbklader'],
+      ['judoevent'],
+    ],
+    fixed: ['pageIndicatorFixed', 'clock'],
+    timings: { default: 20000, 0: 30000 },
+    scheduleTimeZone: 'Europe/Stockholm',
+    pageSchedules: {
+      4: { from: '2026-10-27', until: '2026-11-09' },
+    },
+  },
+},
+```
+
+`from` includes the named day, starting at midnight. `until` excludes the
+named day: in this example, the advert disappears at the beginning of
+9 November, and is visible throughout 8 November. Both values use strict
+`YYYY-MM-DD` dates. Either bound can be omitted. An empty window object
+leaves the page unrestricted. Invalid windows disable their page and log
+an error; unknown page indices are ignored with a warning.
+
+`scheduleTimeZone` is an IANA time zone, such as `Europe/Stockholm`. Omit it
+to use the display's local time zone. Summer/winter time changes are handled
+by the browser. An invalid time zone keeps scheduled pages hidden and logs
+an error; unscheduled pages remain available.
+
+The module checks dates at startup, when receiving notifications, and at
+each minute boundary (including while rotation is paused or no pages are
+active). No restart is required at the start/end date. A sleeping or
+suspended display catches up when its timers run again. An expired current
+page switches to the active home page, or the first active page if the home
+page is unavailable. Its normal fade animation still applies.
+
+The original `homePage`, numeric `timings` keys, and `pageSchedules` keys
+continue to refer to the configured page positions. At runtime, the stock
+page indicator and public `PAGE_SELECT`, `PAGE_CHANGED`, `NEW_PAGE` and
+`PAGE_NUMBER_IS` notifications use **consecutive indices of active pages**.
+For example, if configured page 1 is inactive, clicking dot 1 selects
+configured page 2. Integrations that select pages by number should account
+for this when enabling schedules. `PAGE_INCREMENT` and `PAGE_DECREMENT`
+move through active pages only; Remote Control actions are refreshed when
+the active set changes.
+
+If no normal pages are active, only `fixed` modules remain visible and
+rotation stops until a page becomes active. The stock `MMM-page-indicator`
+is hidden during that period because it does not accept a zero page count.
+Other fixed modules remain visible. Named `hiddenPages` are outside this
+scheduling feature and keep their existing behavior and timeout.
+
+### Configuration reference
 
 | Option              | Type                       | Default Value            | Description |
 | ------------------- | -------------------------- | ------------------------ | ----------- |
 | `modules`           | `[[String...]...]`         | `[]`                     | A 2D String array of what each module should be on which page. Note that all entries must take their class name (e.g. this module's class name is `MMM-pages`, while the default modules may just have `newsfeed`, without the `MMM-` prefix. |
 | `fixed`             | `[String...]`              | `["MMM-page-indicator"]` | Which modules should show up all the time. |
+| `pageSchedules` | `{int: {from?: String, until?: String}}` | `{}` | Date windows keyed by original configured page index; see Date-limited pages above. |
+| `scheduleTimeZone` | `String` | Display local time zone | IANA time zone used for date windows, for example `Europe/Stockholm`. |
 | `hiddenPages`       | `{String: [String...]...}` | `{}`                     | An Object defining special `hiddenPages` which are not available on the normal page rotation and only accessible via a notification. Modules defined in `fixed` are ignored and need to be also added if you wish to have them on any hidden page. |
 | `animationTime`     | `int`                      | `1000`                   | Fading animation time. Set to `0` for instant change. Value is in milliseconds (1 second = 1000 milliseconds). |
 | `rotationTime`      | *NA*                       | *NA*                     | **Deprecated**. Use `timings` instead. |
@@ -196,7 +260,7 @@ The following is the list of notifications that MMM-pages sends out:
 
 | Notification        | Payload type | Description                                                                                                                                                    |
 | ------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MAX_PAGES_CHANGED` | `int`        | This is sent only once during initialization of MMM-pages. This contains the number of pages defined in `config.js`.                                           |
+| `MAX_PAGES_CHANGED` | `int`        | Sent during initialization and whenever schedules change the active page set. Contains the active page count (zero if none are active).                                           |
 | `NEW_PAGE`          | `int`        | This notification is sent out on every page change and contains the current page index. This is to help other modules keep track of what the current page is. This is also sent out during initialization. |
 | `PAGE_NUMBER_IS`    | `int`        | Sent in response to a `QUERY_PAGE_NUMBER` notification. Returns the current page index. This notification sends the same payload as `NEW_PAGE`.                |
 | `REGISTER_API`      | `object`     | Sent once during initialization. Registers page control actions with [MMM-Remote-Control](https://github.com/Jopyth/MMM-Remote-Control) (next, previous, home, pause, resume, leave, and one action per page and hidden page). |
@@ -220,8 +284,8 @@ this.sendNotification("PAGE_SELECT", 2);
 ```
 
 This module keeps internal track of how many pages you have, defined by your
-config in the config file. There is no way to dynamically change the pages you
-have. If there arises a need, please create an issue.
+config in the config file. Date schedules can change the active subset at runtime;
+arbitrary replacement of the configured page definitions is not supported.
 
 This module does not enforce how other modules represents or even responds to
 MMM-pages notifications.
