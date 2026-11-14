@@ -217,6 +217,33 @@ is hidden during that period because it does not accept a zero page count.
 Other fixed modules remain visible. Named `hiddenPages` are outside this
 scheduling feature and keep their existing behavior and timeout.
 
+### Pages without content
+
+A module can ask MMM-pages to skip its page while it has nothing to show, by
+sending `PAGE_CONTENT_AVAILABLE` with a boolean `available`:
+
+```js
+this.sendNotification('PAGE_CONTENT_AVAILABLE', { available: false });
+```
+
+A page is skipped only when **every** module on it (matched by name or class,
+fixed modules excluded) has reported `available: false`. Modules that never
+send the notification count as available, so nothing changes for existing
+setups. Sending `available: true` brings the page back with its original
+timing. Repeated identical reports are ignored.
+
+Skipped pages behave exactly like pages outside their `pageSchedules` window:
+the page indicator and public page indices count only active pages, and if
+the current page becomes empty the display moves to the home page. Both
+mechanisms combine; a page must be inside its date window *and* have content.
+
+Use class names when several instances of the same module are on different
+pages, so that only the right instance decides about its page:
+
+```js
+modules: [['clock', 'medalStats'], ['medalCompetitions']],
+```
+
 ### Configuration reference
 
 | Option              | Type                       | Default Value            | Description |
@@ -250,6 +277,7 @@ The following is the list of notifications that MMM-pages will handle:
 | `PAGE_INCREMENT`    | `int`, Optional | MMM-pages will increment the page, or by `n` times if a number is provided. Not providing a number is equivalent to sending a payload of `1`. If there are no more pages to increment by, this will loop around to the first page. |
 | `PAGE_DECREMENT`    | `int`, Optional | MMM-pages will decrement the page, or by `n` times if a number is provided. Not providing a number is equivalent to sending a payload of `1`. If there are no more pages to decrement by, this will loop around to the last page. |
 | `QUERY_PAGE_NUMBER` | *None*          | MMM-pages will respond with `PAGE_NUMBER_IS` with the current page index. |
+| `PAGE_CONTENT_AVAILABLE` | `{available: boolean}` | The sending module reports whether it has content. A page whose modules all report `false` is skipped; see Pages without content. |
 | `PAUSE_ROTATION`    | *None*          | If MMM-pages is set to rotate, this will pause rotation until a `RESUME_ROTATION` notification is sent. This does nothing if rotation was already paused. |
 | `RESUME_ROTATION`   | *None*          | If MMM-pages was requested to pause rotation, this will resume automatic rotation. This does nothing MMM-pages was not requested to pause. |
 | `HOME_PAGE`         | *None*          | Return to the home page. If no home page is provided, return to the first page instead. |

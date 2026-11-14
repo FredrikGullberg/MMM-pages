@@ -81,6 +81,8 @@ Module.register('MMM-pages', {
 
     this.hiddenPageTimer = null;
     this.permanentlyHiddenModules = new Set();
+    // Module identifiers that reported "no content" via PAGE_CONTENT_AVAILABLE.
+    this.unavailableModules = new Set();
     this.domReady = false;
     this.allPages = this.config.modules.slice();
     this.allTimings = { ...this.config.timings };
@@ -168,7 +170,8 @@ Module.register('MMM-pages', {
    * @param {Date} [now] Current instant, injectable for boundary tests.
    */
   refreshScheduledPages(now = new Date()) {
-    if (!this.pageScheduleRules?.size) return;
+    const allActive = (this.activePageIndices?.length ?? 0) === (this.allPages?.length ?? 0);
+    if (!this.pageScheduleRules?.size && !this.unavailableModules?.size && allActive) return;
     let today;
     if (this.scheduleDateFormatter) {
       const parts = this.scheduleDateFormatter.formatToParts(now);
@@ -176,6 +179,7 @@ Module.register('MMM-pages', {
       today = `${part('year')}-${part('month')}-${part('day')}`;
     }
     const active = this.allPages.map((page, index) => index).filter((index) => {
+      if (!this.pageHasContent(index)) return false;
       if (!this.pageScheduleRules.has(index)) return true;
       const rule = this.pageScheduleRules.get(index);
       return Boolean(rule && today && (!rule.from || today >= rule.from) && (!rule.until || today < rule.until));
@@ -200,6 +204,42 @@ Module.register('MMM-pages', {
         if (!this.rotationPaused) this.resetTimerWithDelay(0);
       }
     }
+  },
+
+  /**
+   * A page lacks content only when every module on it has reported
+   * `PAGE_CONTENT_AVAILABLE` with `available: false`. Modules that never send
+   * the notification count as available, so existing setups are unaffected.
+   * @param {number} index Original configured page index.
+   * @returns {boolean} False if the page should be skipped.
+   */
+  pageHasContent(index) {
+    if (!this.unavailableModules?.size || typeof MM === 'undefined') return true;
+    let matched = 0;
+    let available = false;
+    MM.getModules().withClass(this.allPages[index]).enumerate((module) => {
+      matched += 1;
+      if (!this.unavailableModules.has(module.identifier)) available = true;
+    });
+    return matched === 0 || available;
+  },
+
+  /**
+   * Record a module's content state and rebuild the active pages if it changed.
+   * @param {{available: boolean}} payload Content state from the sending module.
+   * @param {object} sender The MagicMirror module instance that sent it.
+   */
+  setContentAvailability(payload, sender) {
+    if (!sender?.identifier || typeof payload?.available !== 'boolean') {
+      Log.warn('[MMM-pages] Ignoring PAGE_CONTENT_AVAILABLE without a sender or boolean "available".');
+      return;
+    }
+    const had = this.unavailableModules.has(sender.identifier);
+    if (payload.available === !had) return;
+    if (payload.available) this.unavailableModules.delete(sender.identifier);
+    else this.unavailableModules.add(sender.identifier);
+    Log.log(`[MMM-pages] ${sender.name} (${sender.identifier}) reports ${payload.available ? 'content' : 'no content'}.`);
+    this.refreshScheduledPages();
   },
 
   /**
@@ -230,10 +270,13 @@ Module.register('MMM-pages', {
    *                        page by name
    *   'LEAVE_HIDDEN_PAGE' - Hides the currently showing hidden page and
    *                         resumes showing the last page
+   *   'PAGE_CONTENT_AVAILABLE' - A module reports whether it has content;
+   *                              pages where no module has content are skipped
    * @param {string} notification the notification ID
-   * @param {number|string} payload the page to change to/by
+   * @param {number|string|object} payload the page to change to/by
+   * @param {object} [sender] the module that sent the notification
    */
-  notificationReceived(notification, payload) {
+  notificationReceived(notification, payload, sender) {
     if (this.domReady) this.refreshScheduledPages();
     switch (notification) {
       case 'PAGE_CHANGED':
@@ -299,6 +342,9 @@ Module.register('MMM-pages', {
         this.isOnHiddenPage = true;
         this.setRotation(false);
         this.showHiddenPage(payload);
+        break;
+      case 'PAGE_CONTENT_AVAILABLE':
+        this.setContentAvailability(payload, sender);
         break;
       case 'LEAVE_HIDDEN_PAGE':
         Log.log('[MMM-pages] received a notification to leave the current hidden page.');
