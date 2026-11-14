@@ -19,6 +19,12 @@ Module.register('MMM-pages', {
     rotationDelay: 10000,
     homePage: 0,
     useLockString: true,
+    keyboardNavigation: false,
+    keyboardKeys: {
+      next: ['ArrowRight'],
+      previous: ['ArrowLeft'],
+      home: ['Home'],
+    },
   },
 
   /**
@@ -320,6 +326,7 @@ Module.register('MMM-pages', {
         this.resetTimerWithDelay(0);
         this.registerApiActions();
         this.startScheduleTimer();
+        this.setupKeyboardNavigation();
         break;
       case 'QUERY_PAGE_NUMBER':
         this.sendNotification('PAGE_NUMBER_IS', this.config.modules.length ? this.curPage : -1);
@@ -355,6 +362,48 @@ Module.register('MMM-pages', {
         break;
       default: // Do nothing
     }
+  },
+
+  /**
+   * Listen for keyboard page changes when `keyboardNavigation` is enabled.
+   * Registered once; invalid key lists fall back to the defaults.
+   */
+  setupKeyboardNavigation() {
+    if (!this.config.keyboardNavigation || this.keyHandler || typeof document === 'undefined') return;
+    const configured = this.config.keyboardKeys;
+    const keys = {};
+    for (const action of ['next', 'previous', 'home']) {
+      const value = configured?.[action];
+      keys[action] = this.isStringArray(value) ? value : this.defaults.keyboardKeys[action];
+    }
+    this.keyboardKeys = keys;
+    this.keyHandler = event => this.handleKey(event);
+    document.addEventListener('keydown', this.keyHandler);
+    Log.log('[MMM-pages] Keyboard navigation enabled.');
+  },
+
+  /**
+   * Map a keydown event to a page change. Ignores typing in form fields,
+   * modifier combinations and held-down keys.
+   * @param {KeyboardEvent} event The keydown event.
+   * @returns {boolean} True if the key changed (or left) a page.
+   */
+  handleKey(event) {
+    if (event.defaultPrevented || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return false;
+    const target = event.target;
+    if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return false;
+    const action = ['next', 'previous', 'home'].find(name => this.keyboardKeys[name].includes(event.key));
+    if (!action) return false;
+    event.preventDefault();
+    if (this.isOnHiddenPage) {
+      this.notificationReceived('LEAVE_HIDDEN_PAGE');
+      return true;
+    }
+    const notification = { next: 'PAGE_INCREMENT', previous: 'PAGE_DECREMENT', home: 'HOME_PAGE' }[action];
+    // Same pattern as auto rotation: tell other modules, then handle it ourselves.
+    this.sendNotification(notification);
+    this.notificationReceived(notification);
+    return true;
   },
 
   isStringArray(value) {

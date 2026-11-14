@@ -217,6 +217,24 @@ is hidden during that period because it does not accept a zero page count.
 Other fixed modules remain visible. Named `hiddenPages` are outside this
 scheduling feature and keep their existing behavior and timeout.
 
+### Keyboard navigation
+
+Set `keyboardNavigation: true` to change pages with a keyboard connected to
+the mirror: **→** next page, **←** previous page, **Home** the home page.
+On a hidden page, any of these keys leaves it. Keys pressed while typing in a
+form field, with Ctrl/Alt/Cmd, or held down are ignored. The page indicator
+and other modules are notified exactly as for automatic rotation.
+
+```js
+config: {
+  keyboardNavigation: true,
+  // Optional: other keys (KeyboardEvent.key values)
+  keyboardKeys: { next: ['ArrowRight', 'PageDown'], previous: ['ArrowLeft', 'PageUp'], home: ['Home'] },
+},
+```
+
+The MagicMirror window must have keyboard focus (normally true in kiosk mode).
+
 ### Pages without content
 
 A module can ask MMM-pages to skip its page while it has nothing to show, by
@@ -260,6 +278,8 @@ modules: [['clock', 'medalStats'], ['medalCompetitions']],
 | `rotationHomePage`  | `int`                      | `0`                      | Time, in milliseconds, before automatically returning to the home page. If a home page is not set, this returns to the leftmost page instead. This only applies when on a regular page, not when on a hidden page. |
 | `rotationHomePageHidden` | `int`                 | `30000`                  | Time, in milliseconds, before automatically returning to the home page when on a hidden page. Set to `0` to disable automatic return from hidden pages (stay on hidden page indefinitely until manually changed). Default is 30 seconds. |
 | `homePage`          | `int`                      | `0`                      | Which page index is the home page. If none is set, this returns to the leftmost page instead. |
+| `keyboardNavigation` | `boolean` | `false` | Change pages with the arrow keys and Home; see Keyboard navigation. |
+| `keyboardKeys` | `{next, previous, home: [String...]}` | `→`, `←`, `Home` | Keys per action, as `KeyboardEvent.key` values. |
 | `useLockString`     | `bool`                     | `true`                   | Whether or not to use a lock string to show or hide pages. If disabled, other modules may override when modules may be shown. *Advanced users only. Only override this if you know what you're doing.* |
 
 For the `module` configuration option, the first element of the outer array
