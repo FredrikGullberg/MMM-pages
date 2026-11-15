@@ -220,8 +220,16 @@ scheduling feature and keep their existing behavior and timeout.
 ### Keyboard navigation
 
 Set `keyboardNavigation: true` to change pages with a keyboard connected to
-the mirror: **→** next page, **←** previous page, **Home** the home page.
-On a hidden page, any of these keys leaves it. Keys pressed while typing in a
+the mirror: **→** next page, **←** previous page, **Home** the home page,
+**Space** pause/resume rotation. On a hidden page, the arrow keys and Home
+leave it.
+
+A keyboard pause is broadcast as `PAUSE_ROTATION` / `RESUME_ROTATION` and
+ends by itself after `keyboardPauseTimeout` milliseconds without key presses
+(default 10 minutes, `0` = never), so a forgotten pause does not leave the
+mirror on one page. Arrow keys still change page while paused and postpone the
+automatic resume. A pause started by another module is not ended by this
+timeout. Keys pressed while typing in a
 form field, with Ctrl/Alt/Cmd, or held down are ignored. The page indicator
 and other modules are notified exactly as for automatic rotation.
 
@@ -229,11 +237,28 @@ and other modules are notified exactly as for automatic rotation.
 config: {
   keyboardNavigation: true,
   // Optional: other keys (KeyboardEvent.key values)
-  keyboardKeys: { next: ['ArrowRight', 'PageDown'], previous: ['ArrowLeft', 'PageUp'], home: ['Home'] },
+  keyboardKeys: { next: ['ArrowRight', 'PageDown'], previous: ['ArrowLeft', 'PageUp'], home: ['Home'], pause: [' '] },
+  keyboardPauseTimeout: 600000,
 },
 ```
 
 The MagicMirror window must have keyboard focus (normally true in kiosk mode).
+
+### Page timing for other modules
+
+MMM-pages sends `PAGE_TIMING` whenever the next automatic page change is
+(re)scheduled: on every page change, pause and resume.
+
+```js
+{ page: 2, duration: 30000, remaining: 30000, paused: false }
+```
+
+`duration` is the full span until the next automatic change (including
+`rotationDelay` after a resume, or the `rotationHomePage` timeout on pages
+without a timing), `remaining` how much of it is left when sent. `duration: 0`
+means no automatic change is scheduled (`paused: true` while paused). A module
+that starts late can send `QUERY_PAGE_TIMING` to get the current state. The
+page indicator fork uses this to draw a ring that fills until the next page.
 
 ### Pages without content
 
@@ -279,7 +304,8 @@ modules: [['clock', 'medalStats'], ['medalCompetitions']],
 | `rotationHomePageHidden` | `int`                 | `30000`                  | Time, in milliseconds, before automatically returning to the home page when on a hidden page. Set to `0` to disable automatic return from hidden pages (stay on hidden page indefinitely until manually changed). Default is 30 seconds. |
 | `homePage`          | `int`                      | `0`                      | Which page index is the home page. If none is set, this returns to the leftmost page instead. |
 | `keyboardNavigation` | `boolean` | `false` | Change pages with the arrow keys and Home; see Keyboard navigation. |
-| `keyboardKeys` | `{next, previous, home: [String...]}` | `→`, `←`, `Home` | Keys per action, as `KeyboardEvent.key` values. |
+| `keyboardKeys` | `{next, previous, home, pause: [String...]}` | `→`, `←`, `Home`, Space | Keys per action, as `KeyboardEvent.key` values. |
+| `keyboardPauseTimeout` | `int` | `600000` | Milliseconds without key presses before a keyboard pause ends by itself; `0` = never. |
 | `useLockString`     | `bool`                     | `true`                   | Whether or not to use a lock string to show or hide pages. If disabled, other modules may override when modules may be shown. *Advanced users only. Only override this if you know what you're doing.* |
 
 For the `module` configuration option, the first element of the outer array
@@ -297,6 +323,7 @@ The following is the list of notifications that MMM-pages will handle:
 | `PAGE_INCREMENT`    | `int`, Optional | MMM-pages will increment the page, or by `n` times if a number is provided. Not providing a number is equivalent to sending a payload of `1`. If there are no more pages to increment by, this will loop around to the first page. |
 | `PAGE_DECREMENT`    | `int`, Optional | MMM-pages will decrement the page, or by `n` times if a number is provided. Not providing a number is equivalent to sending a payload of `1`. If there are no more pages to decrement by, this will loop around to the last page. |
 | `QUERY_PAGE_NUMBER` | *None*          | MMM-pages will respond with `PAGE_NUMBER_IS` with the current page index. |
+| `QUERY_PAGE_TIMING` | *none* | Re-send `PAGE_TIMING` for the current page; see Page timing for other modules. |
 | `PAGE_CONTENT_AVAILABLE` | `{available: boolean}` | The sending module reports whether it has content. A page whose modules all report `false` is skipped; see Pages without content. |
 | `PAUSE_ROTATION`    | *None*          | If MMM-pages is set to rotate, this will pause rotation until a `RESUME_ROTATION` notification is sent. This does nothing if rotation was already paused. |
 | `RESUME_ROTATION`   | *None*          | If MMM-pages was requested to pause rotation, this will resume automatic rotation. This does nothing MMM-pages was not requested to pause. |

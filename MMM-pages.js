@@ -24,7 +24,9 @@ Module.register('MMM-pages', {
       next: ['ArrowRight'],
       previous: ['ArrowLeft'],
       home: ['Home'],
+      pause: [' '],
     },
+    keyboardPauseTimeout: 600000,
   },
 
   /**
@@ -276,6 +278,7 @@ Module.register('MMM-pages', {
    *                        page by name
    *   'LEAVE_HIDDEN_PAGE' - Hides the currently showing hidden page and
    *                         resumes showing the last page
+   *   'QUERY_PAGE_TIMING' - Re-sends PAGE_TIMING for the current page
    *   'PAGE_CONTENT_AVAILABLE' - A module reports whether it has content;
    *                              pages where no module has content are skipped
    * @param {string} notification the notification ID
@@ -328,6 +331,9 @@ Module.register('MMM-pages', {
         this.startScheduleTimer();
         this.setupKeyboardNavigation();
         break;
+      case 'QUERY_PAGE_TIMING':
+        if (this.lastTiming) this.emitTiming(this.lastTiming.duration ? Math.max(0, this.lastTiming.until - Date.now()) : 0, this.lastTiming.duration);
+        break;
       case 'QUERY_PAGE_NUMBER':
         this.sendNotification('PAGE_NUMBER_IS', this.config.modules.length ? this.curPage : -1);
         break;
@@ -372,7 +378,7 @@ Module.register('MMM-pages', {
     if (!this.config.keyboardNavigation || this.keyHandler || typeof document === 'undefined') return;
     const configured = this.config.keyboardKeys;
     const keys = {};
-    for (const action of ['next', 'previous', 'home']) {
+    for (const action of ['next', 'previous', 'home', 'pause']) {
       const value = configured?.[action];
       keys[action] = this.isStringArray(value) ? value : this.defaults.keyboardKeys[action];
     }
@@ -392,9 +398,15 @@ Module.register('MMM-pages', {
     if (event.defaultPrevented || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return false;
     const target = event.target;
     if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return false;
-    const action = ['next', 'previous', 'home'].find(name => this.keyboardKeys[name].includes(event.key));
+    const action = ['next', 'previous', 'home', 'pause'].find(name => this.keyboardKeys[name].includes(event.key));
     if (!action) return false;
     event.preventDefault();
+    if (action === 'pause') {
+      this.toggleKeyboardPause();
+      return true;
+    }
+    // Activity during a keyboard pause postpones the automatic resume.
+    if (this.keyboardPaused) this.armKeyboardPauseTimeout();
     if (this.isOnHiddenPage) {
       this.notificationReceived('LEAVE_HIDDEN_PAGE');
       return true;
@@ -404,6 +416,59 @@ Module.register('MMM-pages', {
     this.sendNotification(notification);
     this.notificationReceived(notification);
     return true;
+  },
+
+  /**
+   * Pause or resume rotation from the keyboard. A keyboard pause resumes by
+   * itself after `keyboardPauseTimeout` ms without key presses (0 = never),
+   * so a forgotten pause does not leave the mirror on one page.
+   */
+  toggleKeyboardPause() {
+    if (this.rotationPaused) {
+      clearTimeout(this.keyboardPauseTimer);
+      this.keyboardPaused = false;
+      Log.log('[MMM-pages] Rotation resumed from keyboard.');
+      this.sendNotification('RESUME_ROTATION');
+      this.setRotation(true);
+    } else {
+      this.keyboardPaused = true;
+      Log.log('[MMM-pages] Rotation paused from keyboard.');
+      this.sendNotification('PAUSE_ROTATION');
+      this.setRotation(false);
+      this.armKeyboardPauseTimeout();
+    }
+  },
+
+  /**
+   * (Re)start the timer that ends a keyboard pause.
+   */
+  armKeyboardPauseTimeout() {
+    clearTimeout(this.keyboardPauseTimer);
+    const timeout = Number(this.config.keyboardPauseTimeout);
+    if (!(timeout > 0)) return;
+    this.keyboardPauseTimer = setTimeout(() => {
+      if (!this.keyboardPaused || !this.rotationPaused) return;
+      this.keyboardPaused = false;
+      Log.log('[MMM-pages] Keyboard pause timed out; resuming rotation.');
+      this.sendNotification('RESUME_ROTATION');
+      this.setRotation(true);
+    }, timeout);
+  },
+
+  /**
+   * Tell other modules (e.g. the page indicator) when the next automatic page
+   * change happens: `{ page, duration, remaining, paused }`. `duration` is the
+   * full span until that change (0 = no automatic change), `remaining` how
+   * much of it is left now. Sent on every page change, pause and resume.
+   * @param {number} remaining Milliseconds until the next automatic change.
+   * @param {number} [duration] Full span; defaults to `remaining`.
+   */
+  emitTiming(remaining, duration = remaining) {
+    const paused = Boolean(this.rotationPaused);
+    const page = this.config?.modules?.length ? this.curPage : -1;
+    this.lastTiming = { page, duration, until: Date.now() + remaining, paused };
+    if (typeof this.sendNotification !== 'function') return;
+    this.sendNotification('PAGE_TIMING', { page, duration, remaining, paused });
   },
 
   isStringArray(value) {
@@ -446,7 +511,9 @@ Module.register('MMM-pages', {
     // Update if there's at least one page.
     if (this.config.modules.length > 0) {
       this.animatePageChange();
-      if (!this.rotationPaused) {
+      if (this.rotationPaused) {
+        this.emitTiming(0);
+      } else {
         this.resetTimerWithDelay(0);
       }
       this.sendNotification('NEW_PAGE', this.config.modules.length ? this.curPage : -1);
@@ -519,7 +586,10 @@ Module.register('MMM-pages', {
     Log.debug(`[MMM-pages] resetTimerWithDelay called with delay: ${delay}ms`);
     // Always clear, otherwise a timer from the previous page keeps rotating a page without timing.
     this.clearTimers();
-    if (this.config.modules.length === 0) return;
+    if (this.config.modules.length === 0) {
+      this.emitTiming(0);
+      return;
+    }
 
     let currentRotationTime = this.config.timings.default;
     if (Object.hasOwn(this.config.timings, this.curPage)) {
@@ -527,6 +597,7 @@ Module.register('MMM-pages', {
     }
 
     if (currentRotationTime > 0) {
+      this.emitTiming(delay + currentRotationTime);
       this.delayTimer = setTimeout(() => {
         Log.debug(`[MMM-pages] Starting auto rotation with interval: ${currentRotationTime}ms`);
         this.timer = setInterval(() => {
@@ -543,6 +614,7 @@ Module.register('MMM-pages', {
         ? this.config.rotationHomePageHidden
         : this.config.rotationHomePage;
 
+      this.emitTiming(rotationHomePageTimeout > 0 ? delay + rotationHomePageTimeout : 0);
       if (rotationHomePageTimeout > 0) {
         this.delayTimer = setTimeout(() => {
           this.timer = setInterval(() => {
@@ -568,12 +640,13 @@ Module.register('MMM-pages', {
       Log.debug(`[MMM-pages] Rotation already ${shouldRotate ? 'running' : 'paused'}!`);
     } else {
       if (shouldRotate) {
-        this.resetTimerWithDelay(this.config.rotationDelay);
         this.rotationPaused = false;
+        this.resetTimerWithDelay(this.config.rotationDelay);
         Log.debug('[MMM-pages] Rotation resumed');
       } else {
         this.clearTimers();
         this.rotationPaused = true;
+        this.emitTiming(0);
         Log.debug('[MMM-pages] Rotation paused');
       }
     }

@@ -169,7 +169,8 @@ describe('Timer Functionality', () => {
       const originalSetInterval = setInterval;
       const sentPayloads = [];
       instance.sendNotification = (notification, payload) => {
-        sentPayloads.push({ notification, payload });
+        // PAGE_TIMING announces the upcoming change; this test checks the change itself.
+        if (notification !== 'PAGE_TIMING') sentPayloads.push({ notification, payload });
       };
 
       global.setTimeout = (callback) => {
